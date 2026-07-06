@@ -1,0 +1,101 @@
+name: offline-run-packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      istio_version:
+        description: "Istio version without leading v"
+        required: false
+        default: ""
+      use_local_assets:
+        description: "Use committed files under upstream/ instead of downloading release assets"
+        required: false
+        type: boolean
+        default: false
+      skip_images:
+        description: "Skip Docker image packaging for syntax/package smoke tests only"
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build-${{ matrix.arch }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Validate package files
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n build.sh install.sh
+          python3 -m json.tool images/image.json >/dev/null
+          grep -qx '__PAYLOAD_BELOW__' install.sh
+
+      - name: Build offline package
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--arch "${{ matrix.arch }}")
+          if [[ -n "${{ github.event.inputs.istio_version || '' }}" ]]; then
+            args+=(--version "${{ github.event.inputs.istio_version }}")
+          fi
+          if [[ "${{ github.event.inputs.use_local_assets || false }}" == "true" ]]; then
+            args+=(--use-local-assets)
+          fi
+          if [[ "${{ github.event.inputs.skip_images || false }}" == "true" ]]; then
+            args+=(--skip-images)
+          fi
+          bash build.sh "${args[@]}"
+
+      - name: Smoke test installer help
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_file="$(find dist -maxdepth 1 -name '*-${{ matrix.arch }}.run' -type f | head -n 1)"
+          test -n "${run_file}"
+          "${run_file}" help >/tmp/installer-help.txt
+          grep -q 'full|ambient|default|classic' /tmp/installer-help.txt
+          (cd dist && sha256sum -c "$(basename "${run_file}").sha256")
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: istio-run-${{ matrix.arch }}
+          path: |
+            dist/*-${{ matrix.arch }}.run
+            dist/*-${{ matrix.arch }}.run.sha256
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
