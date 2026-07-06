@@ -1,0 +1,66 @@
+[
+  {
+    "name": "pilot",
+    "arch": "amd64",
+    "platform": "linux/amd64",
+    "pull": "docker.io/istio/pilot:1.30.0",
+    "tag": "sealos.hub:5000/kube4/istio/pilot:1.30.0",
+    "tar": "istio-pilot-amd64.tar"
+  },
+  {
+    "name": "proxyv2",
+    "arch": "amd64",
+    "platform": "linux/amd64",
+    "pull": "docker.io/istio/proxyv2:1.30.0",
+    "tag": "sealos.hub:5000/kube4/istio/proxyv2:1.30.0",
+    "tar": "istio-proxyv2-amd64.tar"
+  },
+  {
+    "name": "install-cni",
+    "arch": "amd64",
+    "platform": "linux/amd64",
+    "pull": "docker.io/istio/install-cni:1.30.0",
+    "tag": "sealos.hub:5000/kube4/istio/install-cni:1.30.0",
+    "tar": "istio-install-cni-amd64.tar"
+  },
+  {
+    "name": "ztunnel",
+    "arch": "amd64",
+    "platform": "linux/amd64",
+    "pull": "docker.io/istio/ztunnel:1.30.0",
+    "tag": "sealos.hub:5000/kube4/istio/ztunnel:1.30.0",
+    "tar": "istio-ztunnel-amd64.tar"
+  },
+  {
+    "name": "pilot",
+    "arch": "arm64",
+    "platform": "linux/arm64",
+    "pull": "docker.io/istio/pilot:1.30.0",
+    "tag": "sealos.hub:5000/kube4/istio/pilot:1.30.0",
+    "tar": "istio-pilot-arm64.tar"
+  },
+  {
+    "name": "proxyv2",
+    "arch": "arm64",
+    "platform": "linux/arm64",
+    "pull": "docker.io/istio/proxyv2:1.30.0",
+    "tag": "sealos.hub:5000/kube4/istio/proxyv2:1.30.0",
+    "tar": "istio-proxyv2-arm64.tar"
+  },
+  {
+    "name": "install-cni",
+    "arch": "arm64",
+    "platform": "linux/arm64",
+    "pull": "docker.io/istio/install-cni:1.30.0",
+    "tag": "sealos.hub:5000/kube4/istio/install-cni:1.30.0",
+    "tar": "istio-install-cni-arm64.tar"
+  },
+  {
+    "name": "ztunnel",
+    "arch": "arm64",
+    "platform": "linux/arm64",
+    "pull": "docker.io/istio/ztunnel:1.30.0",
+    "tag": "sealos.hub:5000/kube4/istio/ztunnel:1.30.0",
+    "tar": "istio-ztunnel-arm64.tar"
+  }
+]
