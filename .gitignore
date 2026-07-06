@@ -1,0 +1,8 @@
+.build/
+dist/
+payload.tar.gz
+*.run
+*.run.sha256
+upstream/*.tar.gz
+upstream/istio-*/
+!upstream/.gitkeep
