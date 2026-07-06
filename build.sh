@@ -10,6 +10,8 @@ DIST_DIR="${ROOT_DIR}/dist"
 BUILD_ROOT="${ROOT_DIR}/.build"
 DEFAULT_REGISTRY="sealos.hub:5000/kube4"
 RELEASE_BASE_URL=""
+GATEWAY_API_VERSION="1.5.1"
+GATEWAY_API_BASE_URL=""
 USE_LOCAL_ASSETS=0
 SKIP_IMAGES=0
 KEEP_BUILD=0
@@ -21,20 +23,26 @@ Usage: bash build.sh [options]
 Build Istio offline .run installer packages.
 
 Options:
-  --arch <amd64|arm64|all>  Target architecture. Default: all.
-  --version <version>       Istio version without leading v. Default: ${VERSION}
-  --release-base-url <url>  Override Istio release asset base URL.
-  --use-local-assets        Use upstream/istio-<version>-linux-<arch>.tar.gz instead of downloading.
-  --skip-images             Package charts only; do not pull/save images. For CI syntax tests only.
-  --keep-build              Keep .build/ working directories after packaging.
-  -h, --help                Show this help.
+  --arch <amd64|arm64|all>          Target architecture. Default: all.
+  --version <version>               Istio version without leading v. Default: ${VERSION}
+  --release-base-url <url>          Override Istio release asset base URL.
+  --gateway-api-version <version>   Gateway API CRD version without leading v. Default: ${GATEWAY_API_VERSION}
+  --gateway-api-base-url <url>      Override Gateway API release asset base URL.
+  --use-local-assets                Use upstream assets instead of downloading.
+  --skip-images                     Package charts/CRDs only; do not pull/save images. For CI syntax tests only.
+  --keep-build                      Keep .build/ working directories after packaging.
+  -h, --help                        Show this help.
 
-Expected release asset names:
-  istio-<version>-linux-amd64.tar.gz
-  istio-<version>-linux-arm64.tar.gz
+Expected Istio release asset names when --use-local-assets is used:
+  upstream/istio-<version>-linux-amd64.tar.gz
+  upstream/istio-<version>-linux-arm64.tar.gz
 
-The package includes Helm charts and Istio images for base, istiod, CNI, ztunnel,
-ingress gateway, and egress gateway installation profiles.
+Expected Gateway API CRD asset names when --use-local-assets is used:
+  upstream/gateway-api-v<gateway-api-version>-standard-install.yaml
+  upstream/gateway-api-v<gateway-api-version>-experimental-install.yaml
+
+The package includes Gateway API CRDs, Helm charts, and Istio images for base,
+istiod, CNI, ztunnel, ingress gateway, and egress gateway installation profiles.
 USAGE
 }
 
@@ -47,6 +55,8 @@ while [[ $# -gt 0 ]]; do
     --arch) ARCH="${2:-}"; shift 2 ;;
     --version) VERSION="${2:-}"; shift 2 ;;
     --release-base-url) RELEASE_BASE_URL="${2:-}"; shift 2 ;;
+    --gateway-api-version) GATEWAY_API_VERSION="${2:-}"; shift 2 ;;
+    --gateway-api-base-url) GATEWAY_API_BASE_URL="${2:-}"; shift 2 ;;
     --use-local-assets) USE_LOCAL_ASSETS=1; shift ;;
     --skip-images) SKIP_IMAGES=1; shift ;;
     --keep-build) KEEP_BUILD=1; shift ;;
@@ -56,10 +66,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 VERSION="${VERSION#v}"
+GATEWAY_API_VERSION="${GATEWAY_API_VERSION#v}"
 [[ -n "${VERSION}" ]] || die "version cannot be empty"
+[[ -n "${GATEWAY_API_VERSION}" ]] || die "gateway api version cannot be empty"
 case "${ARCH}" in amd64|arm64|all) ;; *) die "--arch must be amd64, arm64, or all" ;; esac
 if [[ -z "${RELEASE_BASE_URL}" ]]; then
   RELEASE_BASE_URL="https://github.com/istio/istio/releases/download/${VERSION}"
+fi
+if [[ -z "${GATEWAY_API_BASE_URL}" ]]; then
+  GATEWAY_API_BASE_URL="https://github.com/kubernetes-sigs/gateway-api/releases/download/v${GATEWAY_API_VERSION}"
 fi
 
 need tar
@@ -98,6 +113,11 @@ asset_name_for_arch() {
   printf 'istio-%s-linux-%s.tar.gz\n' "${VERSION}" "$1"
 }
 
+gateway_api_local_asset_name() {
+  local channel="$1"
+  printf 'gateway-api-v%s-%s-install.yaml\n' "${GATEWAY_API_VERSION}" "${channel}"
+}
+
 prepare_release_asset() {
   local arch="$1"
   local asset_name cache_dir asset_path url
@@ -118,6 +138,27 @@ prepare_release_asset() {
 
   tar -tzf "${asset_path}" >/dev/null
   printf '%s\n' "${asset_path}"
+}
+
+prepare_gateway_api_crds() {
+  local dest_dir="$1"
+  local channel local_name source_path out_path url
+  mkdir -p "${dest_dir}/crds"
+  for channel in standard experimental; do
+    local_name="$(gateway_api_local_asset_name "${channel}")"
+    out_path="${dest_dir}/crds/gateway-api-${channel}-install.yaml"
+    if [[ "${USE_LOCAL_ASSETS}" == "1" ]]; then
+      source_path="${ROOT_DIR}/upstream/${local_name}"
+      [[ -f "${source_path}" ]] || die "missing local asset: upstream/${local_name}"
+      cp "${source_path}" "${out_path}"
+    else
+      url="${GATEWAY_API_BASE_URL%/}/${channel}-install.yaml"
+      info "downloading ${url}"
+      curl -fL --retry 5 --retry-delay 3 --connect-timeout 20 -o "${out_path}" "${url}"
+    fi
+    [[ -s "${out_path}" ]] || die "Gateway API ${channel} CRD asset is empty"
+    grep -q 'gateway.networking.k8s.io' "${out_path}" || die "Gateway API ${channel} CRD asset does not look valid"
+  done
 }
 
 copy_charts_from_release() {
@@ -286,6 +327,7 @@ build_one() {
   mkdir -p "${payload_dir}/images" "${payload_dir}/meta" "${DIST_DIR}"
 
   asset_path="$(prepare_release_asset "${arch}")"
+  prepare_gateway_api_crds "${payload_dir}"
   copy_charts_from_release "${asset_path}" "${payload_dir}"
   write_default_values "${payload_dir}"
   cp "${ROOT_DIR}/images/image.json" "${payload_dir}/images/image.json"
@@ -295,13 +337,16 @@ build_one() {
   cat > "${payload_dir}/meta/package.env" <<META
 PACKAGE_NAME=${PACKAGE_NAME}
 VERSION=${VERSION}
+GATEWAY_API_VERSION=${GATEWAY_API_VERSION}
 ARCH=${arch}
 PLATFORM=${platform}
-PACKAGE_TYPE=helm-images
+PACKAGE_TYPE=helm-images-gateway-api-crds
 DEFAULT_REGISTRY=${DEFAULT_REGISTRY}
 DEFAULT_IMAGE_HUB=${DEFAULT_REGISTRY}/istio
 BUILT_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 RELEASE_ASSET=${RELEASE_BASE_URL%/}/$(asset_name_for_arch "${arch}")
+GATEWAY_API_STANDARD_ASSET=${GATEWAY_API_BASE_URL%/}/standard-install.yaml
+GATEWAY_API_EXPERIMENTAL_ASSET=${GATEWAY_API_BASE_URL%/}/experimental-install.yaml
 META
 
   (cd "${payload_dir}" && tar -czf "${payload_tar}" .)

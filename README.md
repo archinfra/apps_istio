@@ -2,8 +2,11 @@
 
 Istio offline `.run` installer package.
 
-This repository builds a self-extracting, air-gapped Kubernetes installer for Istio. Unlike a minimal Istio install, the default profile installs the control plane and the commonly needed platform components:
+This repository builds a self-extracting, air-gapped Kubernetes installer for Istio. The package now includes **Gateway API CRDs** and applies them by default before installing Istio, so a single install command prepares the cluster for Istio Gateway API resources such as `Gateway`, `HTTPRoute`, and `GRPCRoute`.
 
+Unlike a minimal Istio install, the default profile installs the control plane and commonly needed platform components:
+
+- Gateway API CRDs, default channel: `standard`
 - `base` CRDs and cluster resources
 - `istiod` control plane
 - `istio-cni`
@@ -11,14 +14,16 @@ This repository builds a self-extracting, air-gapped Kubernetes installer for Is
 - `istio-ingressgateway`
 - `istio-egressgateway`
 
-The installer uses the official Istio release tarball as the chart source and packages the required container images into the `.run` payload.
+The installer uses the official Istio release tarball as the chart source, downloads Gateway API CRD release manifests, and packages the required container images into the `.run` payload.
 
 ## Version
 
 - Istio: `1.30.0`
-- package type: Helm charts + offline images
+- Gateway API CRDs: `v1.5.1`
+- package type: Gateway API CRDs + Helm charts + offline images
 - architectures: `amd64`, `arm64`
 - default profile: `full`
+- default Gateway API CRD channel: `standard`
 
 ## Repository layout
 
@@ -35,24 +40,21 @@ apps_istio/
     offline-run-packages.yml
 ```
 
-Generated directories and release assets are ignored by git:
+## Packaged content
 
-```text
-.build/
-dist/
-upstream/*.tar.gz
-```
+The `.run` payload contains:
 
-## Packaged images
+- Gateway API `standard-install.yaml`
+- Gateway API `experimental-install.yaml`
+- Istio Helm charts from the official release tarball
+- `istioctl` from the official release tarball when available
+- Istio runtime images for each architecture:
+  - `istio/pilot`
+  - `istio/proxyv2`
+  - `istio/install-cni`
+  - `istio/ztunnel`
 
-The package includes the core Istio runtime images for each architecture:
-
-- `istio/pilot`
-- `istio/proxyv2`
-- `istio/install-cni`
-- `istio/ztunnel`
-
-The gateway chart uses `image: auto`; the gateway pods are injected by Istio and use the packaged `proxyv2` image through the configured Istio image hub/tag.
+The gateway chart uses `image: auto`; gateway pods are injected by Istio and use the packaged `proxyv2` image through the configured Istio image hub/tag.
 
 ## Build locally
 
@@ -78,17 +80,19 @@ bash build.sh --arch amd64
 bash build.sh --arch arm64
 ```
 
-Build another Istio version:
+Build another Istio or Gateway API CRD version:
 
 ```bash
-bash build.sh --arch all --version 1.30.0
+bash build.sh --arch all --version 1.30.0 --gateway-api-version 1.5.1
 ```
 
-Use pre-downloaded Istio release assets:
+Use pre-downloaded assets:
 
 ```text
 upstream/istio-1.30.0-linux-amd64.tar.gz
 upstream/istio-1.30.0-linux-arm64.tar.gz
+upstream/gateway-api-v1.5.1-standard-install.yaml
+upstream/gateway-api-v1.5.1-experimental-install.yaml
 ```
 
 ```bash
@@ -104,7 +108,7 @@ dist/istio-1.30.0-arm64.run
 dist/istio-1.30.0-arm64.run.sha256
 ```
 
-## Offline install
+## One-click offline install
 
 Target host requirements:
 
@@ -115,7 +119,7 @@ Target host requirements:
 - `docker`, unless `--skip-image-prepare` is used
 - optional `sha256sum` for artifact verification
 
-Install the default non-minimal profile:
+Install the default full profile and Gateway API CRDs in one command:
 
 ```bash
 sha256sum -c istio-1.30.0-amd64.run.sha256
@@ -125,6 +129,12 @@ chmod +x istio-1.30.0-amd64.run
   --registry-user admin \
   --registry-pass 'passw0rd' \
   -y
+```
+
+The installer order is:
+
+```text
+Gateway API CRDs -> Istio base -> istiod -> istio-cni -> ztunnel -> ingressgateway -> egressgateway
 ```
 
 If the images already exist in the target registry:
@@ -152,14 +162,46 @@ Render without applying:
 ./istio-1.30.0-amd64.run install --dry-run --skip-image-prepare -y
 ```
 
+## Gateway API CRD options
+
+Default behavior is to apply the packaged Gateway API `standard` channel before installing Istio:
+
+```bash
+./istio-1.30.0-amd64.run install -y
+```
+
+Install the `experimental` channel instead:
+
+```bash
+./istio-1.30.0-amd64.run install --gateway-api-channel experimental -y
+```
+
+Skip Gateway API CRDs when the Kubernetes provider already manages compatible Gateway API CRDs:
+
+```bash
+./istio-1.30.0-amd64.run install --skip-gateway-api-crds -y
+```
+
+Force server-side apply conflicts during CRD upgrade:
+
+```bash
+./istio-1.30.0-amd64.run install --force-gateway-api-crds -y
+```
+
+Gateway API CRDs are cluster-scoped and shared. Uninstall keeps them by default. Delete them only when you are certain no other controller or workload depends on them:
+
+```bash
+./istio-1.30.0-amd64.run uninstall --delete-gateway-api-crds -y
+```
+
 ## Profiles
 
 | Profile | Installed components |
 | --- | --- |
-| `full` | base, istiod, istio-cni, ztunnel, ingressgateway, egressgateway |
+| `full` | Gateway API CRDs, base, istiod, istio-cni, ztunnel, ingressgateway, egressgateway |
 | `ambient` | same component set as `full`, with ambient CNI and ztunnel enabled |
 | `default` | alias of `full` |
-| `classic` | base, istiod, ingressgateway, egressgateway |
+| `classic` | Gateway API CRDs, base, istiod, ingressgateway, egressgateway |
 
 The default is intentionally `full`, not `minimal`.
 
@@ -213,6 +255,7 @@ Equivalent manual checks:
 
 ```bash
 helm list -n istio-system
+kubectl get crd gateways.gateway.networking.k8s.io httproutes.gateway.networking.k8s.io grpcroutes.gateway.networking.k8s.io
 kubectl get pods -n istio-system -o wide
 kubectl get svc -n istio-system
 kubectl get gateway -A
@@ -220,7 +263,7 @@ kubectl get gateway -A
 
 ## Uninstall
 
-Uninstall Helm releases but keep the namespace:
+Uninstall Helm releases but keep the namespace and Gateway API CRDs:
 
 ```bash
 ./istio-1.30.0-amd64.run uninstall -y
@@ -232,9 +275,11 @@ Uninstall and delete the namespace:
 ./istio-1.30.0-amd64.run uninstall --delete-namespace -y
 ```
 
-## Gateway API dependency
+Delete Gateway API CRDs explicitly:
 
-Istio can work with Kubernetes Gateway API resources, but this package does not bundle Gateway API CRDs. Install `apps_gateway-api` first when the target cluster does not already provide those CRDs.
+```bash
+./istio-1.30.0-amd64.run uninstall --delete-gateway-api-crds -y
+```
 
 ## GitHub Actions
 
@@ -258,16 +303,7 @@ bash -n build.sh install.sh
 python3 -m json.tool images/image.json >/dev/null
 bash build.sh --arch amd64
 bash build.sh --arch arm64
-(cd dist && sha256sum -c istio-*-amd64.run.sha256)
-(cd dist && sha256sum -c istio-*-arm64.run.sha256)
-./dist/istio-*-amd64.run help
-./dist/istio-*-arm64.run help
-```
-
-In a Kubernetes test cluster:
-
-```bash
+(cd dist && sha256sum -c *.sha256)
+./dist/istio-1.30.0-amd64.run help
 ./dist/istio-1.30.0-amd64.run install --dry-run --skip-image-prepare -y
-./dist/istio-1.30.0-amd64.run install --registry sealos.hub:5000/kube4 -y
-./dist/istio-1.30.0-amd64.run status
 ```
