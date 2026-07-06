@@ -7,6 +7,7 @@ DEFAULT_PROFILE="full"
 DEFAULT_REGISTRY="sealos.hub:5000/kube4"
 DEFAULT_WAIT_TIMEOUT="10m"
 DEFAULT_GATEWAY_SERVICE_TYPE="LoadBalancer"
+DEFAULT_GATEWAY_API_CRD_CHANNEL="standard"
 
 ACTION="${1:-help}"
 if [[ $# -gt 0 ]]; then shift; fi
@@ -20,6 +21,10 @@ REGISTRY_USER=""
 REGISTRY_PASS=""
 WAIT_TIMEOUT="${DEFAULT_WAIT_TIMEOUT}"
 GATEWAY_SERVICE_TYPE="${DEFAULT_GATEWAY_SERVICE_TYPE}"
+INSTALL_GATEWAY_API_CRDS=1
+GATEWAY_API_CRD_CHANNEL="${DEFAULT_GATEWAY_API_CRD_CHANNEL}"
+FORCE_GATEWAY_API_CRDS=0
+DELETE_GATEWAY_API_CRDS=0
 SKIP_IMAGE_PREPARE=0
 YES=0
 DRY_RUN=0
@@ -41,9 +46,9 @@ Usage:
   ./istio-<version>-<arch>.run help
 
 Actions:
-  install      Load/push images and install Istio with Helm charts.
-  status       Show Istio Helm releases, pods, services, and gateways.
-  uninstall    Uninstall Istio Helm releases. Namespace is kept unless --delete-namespace is set.
+  install      Apply Gateway API CRDs, load/push images, and install Istio with Helm charts.
+  status       Show Gateway API CRDs plus Istio Helm releases, pods, services, and gateways.
+  uninstall    Uninstall Istio Helm releases. Namespace and Gateway API CRDs are kept unless explicitly deleted.
   help         Show this help.
 
 Profiles:
@@ -53,29 +58,35 @@ Profiles:
   classic      base + istiod + ingressgateway + egressgateway, without CNI/ztunnel.
 
 Options:
-  -n, --namespace <ns>            Istio namespace. Default: ${DEFAULT_NAMESPACE}
-  --profile <name>                full|ambient|default|classic. Default: ${DEFAULT_PROFILE}
-  --registry <repo-prefix>        Target internal registry prefix. Default: ${DEFAULT_REGISTRY}
-  --registry-user <user>          Target registry username.
-  --registry-pass <pass>          Target registry password.
-  --image-hub <hub>               Override Istio image hub. Default: <registry>/istio
-  --image-tag <tag>               Override Istio image tag. Default: package version.
-  --skip-image-prepare            Skip docker load/tag/push. Use when images already exist.
-  --gateway-service-type <type>   ingressgateway service type. Default: ${DEFAULT_GATEWAY_SERVICE_TYPE}
-  --set <key=value>               Extra Helm --set-string value, repeatable.
-  --wait-timeout <duration>       Helm wait timeout. Default: ${DEFAULT_WAIT_TIMEOUT}
-  --dry-run                       Render Helm templates without applying.
-  --delete-namespace              During uninstall, delete namespace after uninstalling releases.
-  --kubeconfig <path>             Pass an explicit kubeconfig to kubectl and helm.
-  --context <name>                Pass an explicit kube context to kubectl and helm.
-  -y, --yes                       Do not ask for confirmation.
-  -h, --help                      Show this help.
+  -n, --namespace <ns>                 Istio namespace. Default: ${DEFAULT_NAMESPACE}
+  --profile <name>                     full|ambient|default|classic. Default: ${DEFAULT_PROFILE}
+  --registry <repo-prefix>             Target internal registry prefix. Default: ${DEFAULT_REGISTRY}
+  --registry-user <user>               Target registry username.
+  --registry-pass <pass>               Target registry password.
+  --image-hub <hub>                    Override Istio image hub. Default: <registry>/istio
+  --image-tag <tag>                    Override Istio image tag. Default: package version.
+  --skip-image-prepare                 Skip docker load/tag/push. Use when images already exist.
+  --gateway-service-type <type>        ingressgateway service type. Default: ${DEFAULT_GATEWAY_SERVICE_TYPE}
+  --gateway-api-channel <channel>      Gateway API CRD channel: standard|experimental. Default: ${DEFAULT_GATEWAY_API_CRD_CHANNEL}
+  --gateway-api-crds <channel>         Enable Gateway API CRDs and set channel: standard|experimental.
+  --skip-gateway-api-crds              Do not apply packaged Gateway API CRDs.
+  --force-gateway-api-crds             Add --force-conflicts to server-side Gateway API CRD apply.
+  --delete-gateway-api-crds            During uninstall, delete packaged Gateway API CRDs. Dangerous cluster-wide operation.
+  --set <key=value>                    Extra Helm --set-string value, repeatable.
+  --wait-timeout <duration>            Helm wait timeout. Default: ${DEFAULT_WAIT_TIMEOUT}
+  --dry-run                            Render/apply dry-runs without changing resources.
+  --delete-namespace                   During uninstall, delete namespace after uninstalling releases.
+  --kubeconfig <path>                  Pass an explicit kubeconfig to kubectl and helm.
+  --context <name>                     Pass an explicit kube context to kubectl and helm.
+  -y, --yes                            Do not ask for confirmation.
+  -h, --help                           Show this help.
 
 Notes:
   - This is intentionally not a minimal Istio install. The default full profile installs CNI, ztunnel,
     ingress gateway, and egress gateway in addition to base and istiod.
-  - Gateway API CRDs are not bundled here. Install apps_gateway-api first if your Kubernetes cluster
-    does not already include Gateway API CRDs.
+  - Gateway API CRDs are bundled and applied by default before Istio base/istiod, so Gateway/HTTPRoute
+    resources are available after one install command.
+  - Use --skip-gateway-api-crds only when the cluster provider already manages compatible Gateway API CRDs.
 USAGE
 }
 
@@ -95,6 +106,11 @@ while [[ $# -gt 0 ]]; do
     --image-tag) IMAGE_TAG="${2:-}"; shift 2 ;;
     --skip-image-prepare) SKIP_IMAGE_PREPARE=1; shift ;;
     --gateway-service-type) GATEWAY_SERVICE_TYPE="${2:-}"; shift 2 ;;
+    --gateway-api-channel) GATEWAY_API_CRD_CHANNEL="${2:-}"; shift 2 ;;
+    --gateway-api-crds) INSTALL_GATEWAY_API_CRDS=1; GATEWAY_API_CRD_CHANNEL="${2:-}"; shift 2 ;;
+    --skip-gateway-api-crds|--no-gateway-api-crds) INSTALL_GATEWAY_API_CRDS=0; shift ;;
+    --force-gateway-api-crds) FORCE_GATEWAY_API_CRDS=1; shift ;;
+    --delete-gateway-api-crds) DELETE_GATEWAY_API_CRDS=1; shift ;;
     --set) EXTRA_SET_ARGS+=(--set-string "${2:-}"); shift 2 ;;
     --wait-timeout) WAIT_TIMEOUT="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -110,6 +126,7 @@ done
 case "${ACTION}" in install|status|uninstall|help) ;; *) die "unknown action: ${ACTION}" ;; esac
 if [[ "${ACTION}" == "help" ]]; then usage; exit 0; fi
 case "${PROFILE}" in full|ambient|default|classic) ;; *) die "--profile must be full, ambient, default, or classic" ;; esac
+case "${GATEWAY_API_CRD_CHANNEL}" in standard|experimental) ;; *) die "--gateway-api-channel must be standard or experimental" ;; esac
 [[ -n "${NAMESPACE}" ]] || die "namespace cannot be empty"
 [[ -n "${REGISTRY}" ]] || die "registry cannot be empty"
 
@@ -138,6 +155,8 @@ extract_payload() {
   WORKDIR="$(mktemp -d -t ${PACKAGE_NAME}.XXXXXX)"
   trap 'rm -rf "${WORKDIR:-}"' EXIT
   tail -c +"$(payload_start_offset)" "$0" | tar -xzf - -C "${WORKDIR}" || die "failed to extract payload"
+  [[ -f "${WORKDIR}/crds/gateway-api-standard-install.yaml" ]] || die "payload missing Gateway API standard CRDs"
+  [[ -f "${WORKDIR}/crds/gateway-api-experimental-install.yaml" ]] || die "payload missing Gateway API experimental CRDs"
   [[ -d "${WORKDIR}/charts/base" ]] || die "payload missing charts/base"
   [[ -d "${WORKDIR}/charts/istiod" ]] || die "payload missing charts/istiod"
   [[ -d "${WORKDIR}/charts/gateway" ]] || die "payload missing charts/gateway"
@@ -152,6 +171,10 @@ package_meta_value() {
 
 package_version() {
   package_meta_value VERSION
+}
+
+gateway_api_version() {
+  package_meta_value GATEWAY_API_VERSION
 }
 
 resolve_image_tag() {
@@ -172,6 +195,12 @@ resolve_image_hub() {
 confirm() {
   [[ "${YES}" == "1" ]] && return 0
   echo "About to ${ACTION} Istio profile '${PROFILE}' in namespace '${NAMESPACE}'."
+  if [[ "${ACTION}" == "install" && "${INSTALL_GATEWAY_API_CRDS}" == "1" ]]; then
+    echo "Gateway API CRDs: apply packaged ${GATEWAY_API_CRD_CHANNEL} channel before Istio."
+  fi
+  if [[ "${ACTION}" == "uninstall" && "${DELETE_GATEWAY_API_CRDS}" == "1" ]]; then
+    echo "WARNING: Gateway API CRDs will be deleted cluster-wide. This also removes Gateway API resources."
+  fi
   if [[ "${ACTION}" == "uninstall" && "${DELETE_NAMESPACE}" == "1" ]]; then
     echo "WARNING: namespace ${NAMESPACE} will also be deleted."
   fi
@@ -222,6 +251,34 @@ prepare_images() {
     info "docker push ${target_ref}"
     d push "${target_ref}"
   done < "${WORKDIR}/images/image-index.tsv"
+}
+
+install_gateway_api_crds() {
+  [[ "${INSTALL_GATEWAY_API_CRDS}" == "1" ]] || { info "skip Gateway API CRDs"; return 0; }
+  local crd_file="${WORKDIR}/crds/gateway-api-${GATEWAY_API_CRD_CHANNEL}-install.yaml"
+  [[ -f "${crd_file}" ]] || die "Gateway API CRD manifest not found for channel: ${GATEWAY_API_CRD_CHANNEL}"
+  info "apply Gateway API CRDs v$(gateway_api_version) channel=${GATEWAY_API_CRD_CHANNEL}"
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    k apply --dry-run=client -f "${crd_file}" >/dev/null
+    return 0
+  fi
+  local -a apply_args=(apply --server-side -f "${crd_file}")
+  if [[ "${FORCE_GATEWAY_API_CRDS}" == "1" ]]; then
+    apply_args+=(--force-conflicts)
+  fi
+  k "${apply_args[@]}"
+}
+
+delete_gateway_api_crds() {
+  [[ "${DELETE_GATEWAY_API_CRDS}" == "1" ]] || return 0
+  local crd_file="${WORKDIR}/crds/gateway-api-${GATEWAY_API_CRD_CHANNEL}-install.yaml"
+  [[ -f "${crd_file}" ]] || die "Gateway API CRD manifest not found for channel: ${GATEWAY_API_CRD_CHANNEL}"
+  warn "deleting Gateway API CRDs cluster-wide from ${GATEWAY_API_CRD_CHANNEL} channel manifest"
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    k delete --dry-run=client --ignore-not-found=true -f "${crd_file}" >/dev/null
+    return 0
+  fi
+  k delete --ignore-not-found=true -f "${crd_file}"
 }
 
 chart_common_sets() {
@@ -305,8 +362,9 @@ install_app() {
   extract_payload
   resolve_image_tag
   resolve_image_hub
-  info "package ${PACKAGE_NAME} version=$(package_version) profile=${PROFILE} namespace=${NAMESPACE} imageHub=${IMAGE_HUB} imageTag=${IMAGE_TAG}"
+  info "package ${PACKAGE_NAME} version=$(package_version) gatewayApi=$(gateway_api_version) profile=${PROFILE} namespace=${NAMESPACE} imageHub=${IMAGE_HUB} imageTag=${IMAGE_TAG}"
   confirm
+  install_gateway_api_crds
   prepare_images
 
   if [[ "${DRY_RUN}" != "1" ]]; then
@@ -338,6 +396,9 @@ install_app() {
 status_app() {
   need "${KUBECTL_BIN}"
   need "${HELM_BIN}"
+  echo "Gateway API CRDs:"
+  k get crd gateways.gateway.networking.k8s.io httproutes.gateway.networking.k8s.io grpcroutes.gateway.networking.k8s.io 2>/dev/null || true
+  echo
   echo "Istio Helm releases:"
   h list -n "${NAMESPACE}" 2>/dev/null || true
   echo
@@ -368,12 +429,16 @@ uninstall_app() {
   need "${KUBECTL_BIN}"
   need "${HELM_BIN}"
   confirm
+  if [[ "${DELETE_GATEWAY_API_CRDS}" == "1" ]]; then
+    extract_payload
+  fi
   helm_uninstall_release istio-egressgateway
   helm_uninstall_release istio-ingressgateway
   helm_uninstall_release ztunnel
   helm_uninstall_release istiod
   helm_uninstall_release istio-cni
   helm_uninstall_release istio-base
+  delete_gateway_api_crds
   if [[ "${DELETE_NAMESPACE}" == "1" ]]; then
     info "deleting namespace ${NAMESPACE}"
     k delete namespace "${NAMESPACE}" --ignore-not-found=true
